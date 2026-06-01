@@ -1,15 +1,14 @@
 /**
  * tracker.js — Scavenging Tracker Core Logic
  *
- * Key fixes in this version:
- *   1. Alt1 timing: window.alt1 is injected ~50-200ms after page load.
- *      We now poll for it (up to 3s) instead of checking once at startup.
- *   2. Chatbox re-find: if reader.pos becomes null mid-session we re-locate.
- *   3. Overlay rect: amber border drawn around the chatbox when found,
- *      matching the visual feedback from other Alt1 plugins.
- *   4. Debug logging: every assembled chat line is logged so you can
- *      open Alt1's DevTools (right-click app → Inspect) and see what
- *      the reader is actually returning.
+ * Changes in v1.4.0:
+ *   1. Timestamp-based deduplication: if the chatbox shows a local timestamp
+ *      (e.g. [14:32:05]) we track every processed timestamp+line pair in a
+ *      Set. This is a second line of defence on top of the snapshot-diff
+ *      algorithm — even if the same message somehow slips through the diff
+ *      it will be rejected by the timestamp guard.
+ *   2. sessionElapsed exported so ui.js can drive the active timer.
+ *   3. processLine() now returns a boolean (true = recorded, false = skipped).
  */
 
 import * as a1lib from 'alt1/base';
@@ -37,6 +36,9 @@ const SCAVENGING_PATTERNS = [
     /(\d+)\s+x\s+([\w '-]+(?:parts|components|junk)[\w '-]*?)(?:\.|,|$)/i,
 ];
 
+/** Matches a timestamp like [14:32:05] at the start of an assembled line. */
+const TIMESTAMP_RE = /^\[(\d{2}:\d{2}:\d{2})\]/;
+
 // ─── State ────────────────────────────────────────────────────────────────────
 
 function createEmptyState() {
@@ -55,6 +57,18 @@ export class TrackerState {
     constructor() {
         this.state     = createEmptyState();
         this._onUpdate = null;
+
+        /**
+         * Timestamp dedup guard.
+         * Key:   HH:MM:SS string extracted from the chat line.
+         * Value: Set of raw line strings processed at that second.
+         *
+         * We intentionally keep the last ~120 entries (2 minutes) in memory
+         * so we never re-count a message seen during a brief UI glitch, but we
+         * don't grow this forever.  Entries older than 2 minutes are pruned.
+         */
+        this._seenTimestamps = new Map(); // Map<timestamp, Set<string>>
+
         this._loadFromStorage();
     }
 
@@ -85,21 +99,66 @@ export class TrackerState {
 
     reset() {
         this.state = createEmptyState();
+        this._seenTimestamps.clear();
         this._saveToStorage();
         this._emit();
         console.info('[ScavTracker] State reset.');
     }
 
+    /**
+     * Attempt to process a raw chat line.
+     * Returns true if a material was recorded, false if skipped.
+     *
+     * @param {string} text  Full assembled chat line, may include a timestamp.
+     * @returns {boolean}
+     */
     processLine(text) {
-        if (!text) return;
+        if (!text) return false;
+
+        // ── Timestamp dedup guard ─────────────────────────────────────────────
+        // Extract [HH:MM:SS] if present.  If this exact (timestamp, line) pair
+        // has already been processed, skip it immediately.
+        const tsMatch = text.match(TIMESTAMP_RE);
+        if (tsMatch) {
+            const ts = tsMatch[1];
+            if (!this._seenTimestamps.has(ts)) {
+                this._seenTimestamps.set(ts, new Set());
+            }
+            const bucket = this._seenTimestamps.get(ts);
+            if (bucket.has(text)) {
+                console.debug(`[ScavTracker] Timestamp-dedup skip: ${text}`);
+                return false;
+            }
+            bucket.add(text);
+            this._pruneTimestampCache();
+        }
+
+        // ── Pattern matching ──────────────────────────────────────────────────
         for (const pattern of SCAVENGING_PATTERNS) {
             const match = text.match(pattern);
             if (!match) continue;
             const qty  = Math.max(1, parseInt(match[1], 10) || 1);
-            const name = match[2].trim().replace(/\.$/, ''); // strip trailing dot
+            const name = match[2].trim().replace(/\.$/, '');
             if (name.length < 3) continue;
             this._record(name, qty);
-            return;
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Prune timestamp cache entries older than 2 minutes.
+     * We compare HH:MM:SS strings numerically; wrapping at midnight is
+     * handled by keeping at most 120 keys (one per second, 2 minutes).
+     */
+    _pruneTimestampCache() {
+        if (this._seenTimestamps.size > 120) {
+            // Delete the oldest entries (Map preserves insertion order)
+            const iter = this._seenTimestamps.keys();
+            while (this._seenTimestamps.size > 120) {
+                const key = iter.next().value;
+                this._seenTimestamps.delete(key);
+            }
         }
     }
 
@@ -149,10 +208,6 @@ export class ChatboxWatcher {
         this.stop();
         this._setStatus('running', 'Waiting for Alt1…');
 
-        // ── Wait for window.alt1 ──────────────────────────────────────────────
-        // Alt1 injects window.alt1 asynchronously after the page loads.
-        // A single check at startup loses the race ~20% of the time.
-        // Poll every 200 ms for up to 4 seconds before giving up.
         let attempts = 0;
         this._alt1PollTimer = setInterval(() => {
             attempts++;
@@ -165,7 +220,7 @@ export class ChatboxWatcher {
                 return;
             }
 
-            if (attempts >= 20) { // 20 × 200ms = 4s
+            if (attempts >= 20) {
                 clearInterval(this._alt1PollTimer);
                 this._alt1PollTimer = null;
                 this._setStatus('no_alt1',
@@ -181,7 +236,7 @@ export class ChatboxWatcher {
         this._setStatus('idle', '');
     }
 
-    // ── Initialisation (called once window.alt1 is confirmed) ─────────────────
+    // ── Initialisation ────────────────────────────────────────────────────────
 
     _init() {
         try { alt1.identifyAppUrl('./appconfig.json'); } catch (_) {}
@@ -193,23 +248,19 @@ export class ChatboxWatcher {
             return;
         }
 
-        // REQUIRED: without readargs.colors the reader silently ignores
-        // all coloured text — Scavenging messages will never be seen.
         this._reader.readargs = {
             colors: [
-                a1lib.mixColor(255, 128, 0),   // Uncommon component orange
-                a1lib.mixColor(255, 165, 0),   // Scavenging message orange
-                a1lib.mixColor(255,   0, 0),   // Rare component red
-                a1lib.mixColor( 67, 188, 188), // Ancient component teal
-                a1lib.mixColor(255, 255, 255), // White punctuation / commas
-                a1lib.mixColor(  0, 255,   0), // Standard game-message green
+                a1lib.mixColor(255, 128, 0),
+                a1lib.mixColor(255, 165, 0),
+                a1lib.mixColor(255,   0, 0),
+                a1lib.mixColor( 67, 188, 188),
+                a1lib.mixColor(255, 255, 255),
+                a1lib.mixColor(  0, 255,   0),
             ],
         };
 
         this._setStatus('running', 'Searching for chatbox…');
 
-        // Mirror the reference-plugin startup pattern exactly:
-        // small initial delay → first find → poll every 1s until pos is set.
         setTimeout(() => {
             this._reader.find();
 
@@ -222,20 +273,14 @@ export class ChatboxWatcher {
                     clearInterval(this._findInterval);
                     this._findInterval = null;
 
-                    // Select the first (top-most) detected chatbox
                     if (this._reader.pos.boxes?.length > 0) {
                         this._reader.pos.mainbox = this._reader.pos.boxes[0];
                     }
 
-                    // ── Amber overlay border ──────────────────────────────────
-                    // Draw a coloured rectangle around the chatbox for 3 s so
-                    // the player can confirm the right box was detected.
                     this._flashChatboxBorder();
-
                     this._setStatus('running', 'Scanning chatbox…');
                     console.info('[ScavTracker] Chatbox found — scanning started.');
 
-                    // Start the main scan loop
                     this._scanInterval = setInterval(() => this._tick(), SCAN_INTERVAL_MS);
                 }
             }, 1000);
@@ -244,36 +289,25 @@ export class ChatboxWatcher {
 
     // ── Overlay helpers ───────────────────────────────────────────────────────
 
-    /**
-     * Draw an amber rectangle around the active chatbox.
-     * @param {number} [durationMs=3000]
-     */
     _flashChatboxBorder(durationMs = 3000) {
         try {
             const box = this._reader.pos.mainbox;
             if (!box?.rect) return;
             const r = box.rect;
-            alt1.overLayRect(
-                OVERLAY_COLOR,
-                r.x, r.y, r.width, r.height,
-                durationMs,
-                2          // border thickness in pixels
-            );
-        } catch (_) { /* overlay not available or pos changed */ }
+            alt1.overLayRect(OVERLAY_COLOR, r.x, r.y, r.width, r.height, durationMs, 2);
+        } catch (_) {}
     }
 
     // ── Scan tick ─────────────────────────────────────────────────────────────
 
     _tick() {
         try {
-            // If reader lost its position (e.g. RS3 resized), try to re-find.
             if (!this._reader.pos) {
                 this._setStatus('no_chatbox', 'Chatbox position lost — re-searching…');
                 this._reader.find();
                 return;
             }
 
-            // read() returns null or [] when nothing new is visible — that's normal.
             const opts = this._reader.read();
             if (!opts || opts.length === 0) return;
 
@@ -283,16 +317,13 @@ export class ChatboxWatcher {
 
             const lines = this._assembleLines(opts);
 
-            // ── Debug: log every assembled line so you can verify what ────────
-            // the reader is actually seeing. Open Alt1 DevTools with:
-            //   Right-click the app window → Inspect Element → Console tab
             for (const line of lines) {
                 if (line.match(/scaveng|part|component|junk/i)) {
                     console.log('[ScavTracker] Candidate line:', line);
                 }
             }
 
-            // ── Snapshot diff — process only genuinely new lines ──────────────
+            // ── Snapshot diff ─────────────────────────────────────────────────
             const prev     = [...this._prevSnapshot];
             const newLines = [];
 
@@ -319,14 +350,6 @@ export class ChatboxWatcher {
 
     // ── Line assembly ─────────────────────────────────────────────────────────
 
-    /**
-     * Convert the raw opts array from reader.read() into an array of complete
-     * chat-message strings, using timestamps as line boundaries.
-     * Matches the processChat() logic in the reference plugin exactly.
-     *
-     * @param {Array} opts
-     * @returns {string[]}
-     */
     _assembleLines(opts) {
         const timestampRe = /\[\d{2}:\d{2}:\d{2}\]/;
         let chatStr = '';
@@ -334,9 +357,6 @@ export class ChatboxWatcher {
         for (let i = 0; i < opts.length; i++) {
             const text = (opts[i].text || '').trim();
             if (!text) continue;
-
-            // Skip the very first fragment if it has no timestamp —
-            // it's a partial line from before the current session.
             if (i === 0 && !text.match(timestampRe)) continue;
 
             if (text.match(timestampRe)) {
@@ -347,7 +367,6 @@ export class ChatboxWatcher {
             }
         }
 
-        // Clean up double-x artifacts: "2 x x Base Parts" → "2 x Base Parts"
         chatStr = chatStr.replace(/(\d)\s+x\s+x\s+/g, '$1 x ');
 
         return chatStr.trim()

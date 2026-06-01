@@ -5,7 +5,7 @@
 import { TrackerState, ChatboxWatcher } from './tracker.js';
 import { initUI, renderAll, updateStatus } from './ui.js';
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.4.0';
 
 document.addEventListener('DOMContentLoaded', () => {
 
