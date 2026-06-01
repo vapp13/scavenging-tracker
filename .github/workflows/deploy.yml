@@ -1,0 +1,99 @@
+# ─────────────────────────────────────────────────────────────
+# .github/workflows/deploy.yml
+# Scavenging Tracker — GitHub Pages Deployment
+#
+# Triggers:
+#   • Push to the `main` branch
+#   • Manual workflow dispatch (Actions tab → Run workflow)
+#
+# Steps:
+#   1. Checkout repository
+#   2. Setup Node.js 20 with npm cache
+#   3. Install dependencies (npm ci — reproducible from lockfile)
+#   4. Run production webpack build → /dist
+#   5. Upload /dist as a GitHub Pages artifact
+#   6. Deploy to GitHub Pages
+# ─────────────────────────────────────────────────────────────
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:        # Allow manual trigger from the Actions tab
+
+# Required for deploying to GitHub Pages via OIDC token
+permissions:
+  contents: read
+  pages:    write
+  id-token: write
+
+# Prevent multiple simultaneous deployments
+concurrency:
+  group:              "pages"
+  cancel-in-progress: false
+
+# ── Jobs ──────────────────────────────────────────────────────
+
+jobs:
+
+  # ── Build ──────────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production bundle
+        run: npm run build
+
+      # Verify the dist directory was produced
+      - name: Verify build output
+        run: |
+          echo "── Build output contents ──────────────────"
+          ls -la dist/
+          echo "───────────────────────────────────────────"
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  # ── Deploy ─────────────────────────────────────────────────
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Print deployment URL
+        run: |
+          echo ""
+          echo "✅ Scavenging Tracker deployed!"
+          echo "   App URL : ${{ steps.deployment.outputs.page_url }}"
+          echo ""
+          echo "   Alt1 add-app URL:"
+          echo "   ${{ steps.deployment.outputs.page_url }}appconfig.json"

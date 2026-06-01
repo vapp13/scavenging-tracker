@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- ── Cache-busting headers ──────────────────────────────────────────────
+         Alt1 uses CEF (Chromium) which aggressively caches pages.
+         These headers tell it to always revalidate with the server,
+         so you get the latest build every time the app opens.        -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma"        content="no-cache">
+    <meta http-equiv="Expires"       content="0">
+
+    <title>Scavenging Tracker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@400;600;700&display=swap">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Dev-mode Banner -->
+<div id="dev-banner" hidden>
+    <span class="dev-icon">⚠</span>
+    <span>Running outside Alt1 — OCR disabled. Use <code>ScavDev.proc("Name", qty)</code> in console.</span>
+</div>
+
+<!-- App Shell -->
+<div id="app">
+
+    <!-- Toolbar -->
+    <header id="toolbar">
+        <div id="brand">
+            <span class="brand-icon">⚙</span>
+            <span class="brand-name">SCAVENGING</span>
+            <span class="brand-sub">TRACKER</span>
+            <!-- Version stamp — filled by app.js on load -->
+            <span id="app-version" class="brand-version"></span>
+        </div>
+        <div id="status-indicator">
+            <span id="status-dot" class="status-idle" aria-label="Status indicator"></span>
+            <span id="status-text">Idle</span>
+        </div>
+    </header>
+
+    <!-- Summary Cards -->
+    <section id="summary" aria-label="Session summary">
+        <div class="stat-card" title="Total Scavenging procs detected">
+            <div class="stat-value" id="total-procs">0</div>
+            <div class="stat-label">PROCS</div>
+        </div>
+        <div class="stat-card" title="Total materials obtained">
+            <div class="stat-value" id="total-materials">0</div>
+            <div class="stat-label">TOTAL</div>
+        </div>
+        <div class="stat-card stat-uncommon" title="Total uncommon materials">
+            <div class="stat-value" id="total-uncommon">0</div>
+            <div class="stat-label">UNCOMMON</div>
+        </div>
+        <div class="stat-card stat-rare" title="Total rare materials">
+            <div class="stat-value" id="total-rare">0</div>
+            <div class="stat-label">RARE</div>
+        </div>
+    </section>
+
+    <!-- Controls Row -->
+    <div id="controls-row">
+        <div id="sort-controls" aria-label="Sort options">
+            <span class="sort-label">SORT</span>
+            <button class="sort-btn active" data-sort="count"    title="Sort by count">COUNT</button>
+            <button class="sort-btn"        data-sort="name"     title="Sort alphabetically">NAME</button>
+            <button class="sort-btn"        data-sort="category" title="Sort by rarity">RARITY</button>
+        </div>
+        <button id="reset-btn" aria-label="Reset all counters">
+            <span class="reset-icon">↺</span> RESET
+        </button>
+    </div>
+
+    <!-- Materials Table -->
+    <div id="table-wrap" role="region" aria-label="Material breakdown">
+        <table id="materials-table" aria-live="polite">
+            <thead>
+                <tr>
+                    <th class="col-name"     scope="col">MATERIAL</th>
+                    <th class="col-count"    scope="col">COUNT</th>
+                    <th class="col-category" scope="col">RARITY</th>
+                </tr>
+            </thead>
+            <tbody id="materials-body">
+                <tr class="empty-row">
+                    <td colspan="3">No materials detected yet — start killing monsters!</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Footer -->
+    <footer id="app-footer">
+        <span id="session-start">Session: --:--</span>
+        <span id="footer-hint">Data persists across restarts</span>
+    </footer>
+
+</div>
+
+</body>
+</html>
