@@ -1,7 +1,6 @@
 const path              = require('path');
 const webpack           = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
-const CopyWebpackPlugin = require('copy-webpack-plugin');
 
 module.exports = (env, argv) => {
     const isDev = argv.mode === 'development';
@@ -13,10 +12,11 @@ module.exports = (env, argv) => {
             path:     path.resolve(__dirname, 'dist'),
             filename: isDev ? 'bundle.js' : 'bundle.[contenthash:8].js',
             clean:    true,
+            library:  { type: 'umd', name: 'ScavTracker' },
         },
 
         mode:    isDev ? 'development' : 'production',
-        devtool: isDev ? 'inline-source-map' : false,
+        devtool: false,
 
         devServer: {
             static:  path.resolve(__dirname, 'dist'),
@@ -25,70 +25,81 @@ module.exports = (env, argv) => {
             open:    true,
         },
 
+        // ── Externals ─────────────────────────────────────────────────────────
+        // canvas, sharp, electron are optional peer dependencies inside alt1
+        // that only apply in Node/Electron environments, not the browser.
+        externals: ['sharp', 'canvas', 'electron/common'],
+
+        // ── Resolve ───────────────────────────────────────────────────────────
+        resolve: {
+            extensions: ['.wasm', '.mjs', '.js', '.jsx'],
+
+            // CRITICAL: The alt1 package uses package.json "exports" with a
+            // custom "alt1-source" condition. We must tell webpack to resolve
+            // the "default" condition (the compiled JS dist files).
+            // Without this, webpack can't locate alt1/chatbox, alt1/base etc.
+            conditionNames: ['default', 'require', 'node'],
+
+            fallback: {
+                buffer: require.resolve('buffer/'),
+            },
+        },
+
+        // ── Module Rules ──────────────────────────────────────────────────────
         module: {
             rules: [
+                // CSS: style-loader injects a <style> tag at runtime.
+                // Triggered by: import '../style.css' in app.js
                 {
-                    test:    /\.js$/,
-                    include: /node_modules[\\/]alt1/,
-                    resolve: { fullySpecified: false },
+                    test: /\.css$/,
+                    use:  ['style-loader', 'css-loader'],
                 },
+
+                // PNG: webpack copies to dist/ and returns the output URL.
+                // Triggered by: import '../icon.png' in app.js
                 {
                     test: /\.(png|jpg|jpeg|gif|webp)$/,
                     type: 'asset/resource',
                     generator: { filename: '[base]' },
                 },
+
+                // appconfig.json: copied to dist/ as a static asset.
+                // Triggered by: import '../appconfig.json' in app.js
+                {
+                    test:    /appconfig\.json$/,
+                    type:    'asset/resource',
+                    generator: { filename: '[base]' },
+                },
+
+                // alt1 packages ship as CJS but have ESM-style imports internally.
+                // This rule prevents "fullySpecified" resolution errors.
+                {
+                    test:    /\.js$/,
+                    include: /node_modules[\\/]alt1/,
+                    resolve: { fullySpecified: false },
+                },
             ],
         },
 
-        resolve: {
-            extensions: ['.js', '.ts'],
-            fallback: {
-                // Browser polyfill for Buffer (used by alt1/base)
-                buffer:  require.resolve('buffer/'),
-                // Node built-ins — not needed in browser
-                process: false,
-                util:    false,
-                path:    false,
-                fs:      false,
-                // Native image libs — alt1/base tries to require these in
-                // Node environments but doesn't need them in the browser
-                canvas:  false,
-                sharp:   false,
-            },
-        },
-
+        // ── Plugins ───────────────────────────────────────────────────────────
         plugins: [
-            // Silence the "can't resolve" warnings for Node-only optional deps
-            // that alt1/base conditionally imports (canvas, sharp, electron)
-            new webpack.IgnorePlugin({
-                resourceRegExp: /^(canvas|sharp|electron(\/.*)?|node-fetch)$/,
-            }),
-
-            // Make Buffer available globally (required by alt1/base)
+            // Buffer polyfill — alt1/base uses Buffer in the browser bundle
             new webpack.ProvidePlugin({
                 Buffer: ['buffer', 'Buffer'],
             }),
 
-            // Replace process.env.NODE_ENV so ScavDev helpers are
-            // tree-shaken out of the production build
+            // NODE_ENV — allows tree-shaking of ScavDev dev helpers in prod
             new webpack.DefinePlugin({
                 'process.env.NODE_ENV': JSON.stringify(
                     isDev ? 'development' : 'production'
                 ),
             }),
 
+            // Inject hashed bundle filename into index.html automatically
             new HtmlWebpackPlugin({
                 template: './index.html',
                 filename: 'index.html',
                 inject:   'body',
-            }),
-
-            new CopyWebpackPlugin({
-                patterns: [
-                    { from: 'style.css',      to: 'style.css'      },
-                    { from: 'appconfig.json', to: 'appconfig.json' },
-                    { from: 'icon.png',       to: 'icon.png', noErrorOnMissing: true },
-                ],
             }),
         ],
 

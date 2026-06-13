@@ -1,12 +1,11 @@
 /**
  * ui.js — Scavenging Tracker UI Layer
+ * All DOM interactions, tab switching, timer display, stats, CSV export.
  */
 
 // ─── Sorting ──────────────────────────────────────────────────────────────────
-
 const CATEGORY_ORDER = { rare: 0, uncommon: 1, common: 2 };
 let currentSort = 'count';
-
 const SORT_FNS = {
     count:    (a, b) => b.count - a.count || a.name.localeCompare(b.name),
     name:     (a, b) => a.name.localeCompare(b.name),
@@ -15,29 +14,31 @@ const SORT_FNS = {
         || b.count - a.count,
 };
 
-// ─── DOM Element Cache ────────────────────────────────────────────────────────
+// ─── Element cache ────────────────────────────────────────────────────────────
+let $statusDot, $statusText;
+let $totalProcs, $totalMaterials, $totalUncommon, $totalRare;
+let $tableBody, $sessionStart;
+let $resetBtn, $sortBtns;
+let $sessionTimer, $statsTimer;
 
-let $statusDot;
-let $statusText;
-let $totalProcs;
-let $totalMaterials;
-let $totalUncommon;
-let $totalRare;
-let $tableBody;
-let $sessionStart;
-let $resetBtn;
-let $sortBtns;
-
-// Previous stat values for bump animation
-const _prevValues = { procs: -1, materials: -1, uncommon: -1, rare: -1 };
-
-// Reset button confirmation state
+const _prev = { procs: -1, materials: -1, uncommon: -1, rare: -1 };
 let _resetPending = false;
 let _resetTimer   = null;
 
-// ─── Initialisation ───────────────────────────────────────────────────────────
+// ─── Init ─────────────────────────────────────────────────────────────────────
 
-export function initUI(onReset, onSortChange) {
+/**
+ * @param {()=>void}     onReset
+ * @param {()=>void}     onSortChange
+ * @param {()=>void}     onExportCSV
+ * @param {string}       version       e.g. '1.4.0'
+ */
+export function initUI(onReset, onSortChange, onExportCSV, version) {
+    // Stamp version everywhere it appears
+    document.querySelectorAll('#app-version, #about-version').forEach(el => {
+        el.textContent = `v${version}`;
+    });
+
     $statusDot      = document.getElementById('status-dot');
     $statusText     = document.getElementById('status-text');
     $totalProcs     = document.getElementById('total-procs');
@@ -45,44 +46,58 @@ export function initUI(onReset, onSortChange) {
     $totalUncommon  = document.getElementById('total-uncommon');
     $totalRare      = document.getElementById('total-rare');
     $tableBody      = document.getElementById('materials-body');
-    $sessionStart   = document.getElementById('session-start');
+    $sessionTimer   = document.getElementById('session-timer');
+    $statsTimer     = document.getElementById('stats-timer');
     $resetBtn       = document.getElementById('reset-btn');
     $sortBtns       = document.querySelectorAll('.sort-btn');
 
-    // ── Reset button — two-step inline confirmation ───────────────────────────
-    // Alt1 (CEF browser) blocks window.confirm(), so we use a two-click pattern:
-    //   First click:  button turns red and shows "CONFIRM?"
-    //   Second click: actually resets
-    //   No second click within 3 s: reverts to normal
-    $resetBtn.addEventListener('click', () => {
-        if (!_resetPending) {
-            // First click — ask for confirmation
-            _resetPending = true;
-            $resetBtn.textContent = '✓ CONFIRM?';
-            $resetBtn.classList.add('reset-confirm');
-
-            // Auto-cancel after 3 seconds if not confirmed
-            _resetTimer = setTimeout(() => {
-                _cancelReset();
-            }, 3000);
-        } else {
-            // Second click — confirmed, do the reset
-            _cancelReset();
-            onReset();
-            _prevValues.procs     = -1;
-            _prevValues.materials = -1;
-            _prevValues.uncommon  = -1;
-            _prevValues.rare      = -1;
-        }
+    // ── Tabs ──────────────────────────────────────────────────────────────────
+    const tabBtns   = document.querySelectorAll('.tab-btn');
+    const tabPanels = document.querySelectorAll('.tab-panel');
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const target = btn.dataset.tab;
+            tabBtns.forEach(b => b.classList.toggle('active', b === btn));
+            tabPanels.forEach(p => p.classList.toggle('active', p.id === `tab-${target}`));
+        });
     });
 
-    // ── Sort buttons ──────────────────────────────────────────────────────────
+    // ── Sort ──────────────────────────────────────────────────────────────────
     $sortBtns.forEach(btn => {
         btn.addEventListener('click', () => {
             if (currentSort === btn.dataset.sort) return;
             currentSort = btn.dataset.sort;
             $sortBtns.forEach(b => b.classList.toggle('active', b === btn));
-            if (onSortChange) onSortChange(currentSort);
+            onSortChange();
+        });
+    });
+
+    // ── Reset — two-click inline confirmation (window.confirm blocked in CEF) ─
+    $resetBtn.addEventListener('click', () => {
+        if (!_resetPending) {
+            _resetPending = true;
+            $resetBtn.textContent = '✓ CONFIRM?';
+            $resetBtn.classList.add('reset-confirm');
+            _resetTimer = setTimeout(_cancelReset, 3000);
+        } else {
+            _cancelReset();
+            onReset();
+            Object.keys(_prev).forEach(k => (_prev[k] = -1));
+        }
+    });
+
+    // ── Export CSV ────────────────────────────────────────────────────────────
+    const exportBtn = document.getElementById('export-csv-btn');
+    if (exportBtn) exportBtn.addEventListener('click', onExportCSV);
+
+    // ── About links — open in system browser ──────────────────────────────────
+    document.querySelectorAll('.about-link').forEach(link => {
+        link.addEventListener('click', e => {
+            e.preventDefault();
+            const url = link.getAttribute('href');
+            if (url && url.startsWith('http')) {
+                window.open(url, '_blank');
+            }
         });
     });
 }
@@ -95,124 +110,160 @@ function _cancelReset() {
     $resetBtn.classList.remove('reset-confirm');
 }
 
-// ─── Status Indicator ─────────────────────────────────────────────────────────
-
-const STATUS_CLASSES = ['status-idle', 'status-running', 'status-warn', 'status-error'];
-
-const STATUS_CONFIG = {
+// ─── Status ───────────────────────────────────────────────────────────────────
+const _statusClasses = ['status-idle','status-running','status-warn','status-error'];
+const _statusCfg = {
     idle:       { cls: 'status-idle',    label: 'Idle'              },
     running:    { cls: 'status-running', label: 'Scanning'          },
     no_alt1:    { cls: 'status-error',   label: 'Alt1 Not Detected' },
     no_chatbox: { cls: 'status-warn',    label: 'Chatbox Not Found' },
     error:      { cls: 'status-error',   label: 'Error'             },
 };
-
 export function updateStatus(status, detail = '') {
-    const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.idle;
-    STATUS_CLASSES.forEach(c => $statusDot.classList.remove(c));
+    const cfg = _statusCfg[status] || _statusCfg.idle;
+    _statusClasses.forEach(c => $statusDot.classList.remove(c));
     $statusDot.classList.add(cfg.cls);
     $statusText.textContent = cfg.label;
-    detail
-        ? $statusText.setAttribute('title', detail)
-        : $statusText.removeAttribute('title');
+    detail ? $statusText.setAttribute('title', detail) : $statusText.removeAttribute('title');
 }
 
-// ─── Summary Cards ────────────────────────────────────────────────────────────
+// ─── Timer display ────────────────────────────────────────────────────────────
+/**
+ * Update both timer elements (tracker footer + stats tab hero).
+ * @param {number} elapsedMs
+ */
+export function updateTimers(elapsedMs) {
+    const str = _fmtDuration(elapsedMs);
+    if ($sessionTimer) $sessionTimer.textContent = str;
+    if ($statsTimer)   $statsTimer.textContent   = str;
+}
 
+// ─── Summary cards ────────────────────────────────────────────────────────────
 export function renderSummary(state) {
-    _updateStat($totalProcs,     state.totalProcs,     _prevValues, 'procs');
-    _updateStat($totalMaterials, state.totalMaterials,  _prevValues, 'materials');
-    _updateStat($totalUncommon,  state.totalUncommon,   _prevValues, 'uncommon');
-    _updateStat($totalRare,      state.totalRare,        _prevValues, 'rare');
-
-    if (state.sessionStart) {
-        const d = new Date(state.sessionStart);
-        $sessionStart.textContent =
-            `Session: ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-    }
+    _setStat($totalProcs,     state.totalProcs,     'procs');
+    _setStat($totalMaterials, state.totalMaterials, 'materials');
+    _setStat($totalUncommon,  state.totalUncommon,  'uncommon');
+    _setStat($totalRare,      state.totalRare,      'rare');
 }
-
-function _updateStat($el, value, prev, key) {
+function _setStat($el, value, key) {
     const n = value || 0;
-    if (n !== prev[key]) {
-        $el.textContent = _fmt(n);
-        if (n > prev[key] && prev[key] >= 0) {
-            const card = $el.closest('.stat-card');
-            if (card) {
-                card.classList.remove('stat-bump');
-                void card.offsetWidth;
-                card.classList.add('stat-bump');
-            }
-        }
-        prev[key] = n;
+    if (n === _prev[key]) return;
+    $el.textContent = _fmt(n);
+    if (n > _prev[key] && _prev[key] >= 0) {
+        const card = $el.closest('.stat-card');
+        if (card) { card.classList.remove('stat-bump'); void card.offsetWidth; card.classList.add('stat-bump'); }
     }
+    _prev[key] = n;
 }
 
-// ─── Materials Table ──────────────────────────────────────────────────────────
-
+// ─── Materials table ──────────────────────────────────────────────────────────
 export function renderTable(state) {
-    const entries = Object.entries(state.materials || {}).map(([name, data]) => ({
-        name,
-        count:    data.count    || 0,
-        category: data.category || 'common',
-    }));
+    const entries = Object.entries(state.materials || {})
+        .map(([name, d]) => ({ name, count: d.count || 0, category: d.category || 'common' }));
 
-    if (entries.length === 0) {
-        $tableBody.innerHTML =
-            '<tr class="empty-row"><td colspan="3">' +
-            'No materials detected yet — start killing monsters!' +
-            '</td></tr>';
+    if (!entries.length) {
+        $tableBody.innerHTML = '<tr class="empty-row"><td colspan="3">No materials detected yet — start killing monsters!</td></tr>';
         return;
     }
 
     entries.sort(SORT_FNS[currentSort] || SORT_FNS.count);
-
     const frag = document.createDocumentFragment();
 
-    for (const entry of entries) {
+    for (const e of entries) {
         const tr = document.createElement('tr');
-        tr.className = `row-${entry.category}`;
+        tr.className = `row-${e.category}`;
 
-        const tdName = document.createElement('td');
-        tdName.className = 'col-name';
-        if (entry.category === 'rare') {
+        const tdN = document.createElement('td'); tdN.className = 'col-name';
+        if (e.category === 'rare') {
             const star = document.createElement('span');
-            star.className   = 'rare-star';
-            star.textContent = '★ ';
-            star.setAttribute('aria-hidden', 'true');
-            tdName.appendChild(star);
+            star.className = 'rare-star'; star.textContent = '★ ';
+            star.setAttribute('aria-hidden','true');
+            tdN.appendChild(star);
         }
-        tdName.appendChild(document.createTextNode(entry.name));
-        tr.appendChild(tdName);
+        tdN.appendChild(document.createTextNode(e.name));
+        tr.appendChild(tdN);
 
-        const tdCount = document.createElement('td');
-        tdCount.className   = 'col-count';
-        tdCount.textContent = _fmt(entry.count);
-        tr.appendChild(tdCount);
+        const tdC = document.createElement('td'); tdC.className = 'col-count'; tdC.textContent = _fmt(e.count); tr.appendChild(tdC);
 
-        const tdCat = document.createElement('td');
-        tdCat.className = 'col-category';
+        const tdR = document.createElement('td'); tdR.className = 'col-category';
         const badge = document.createElement('span');
-        badge.className   = `badge badge-${entry.category}`;
-        badge.textContent = _cap(entry.category);
-        tdCat.appendChild(badge);
-        tr.appendChild(tdCat);
+        badge.className = `badge badge-${e.category}`; badge.textContent = _cap(e.category);
+        tdR.appendChild(badge); tr.appendChild(tdR);
 
         frag.appendChild(tr);
     }
-
     $tableBody.innerHTML = '';
     $tableBody.appendChild(frag);
 }
 
-// ─── Full Render ──────────────────────────────────────────────────────────────
+// ─── Stats panel ──────────────────────────────────────────────────────────────
+/**
+ * Update the Stats tab with current rates.
+ * Call every second from the timer interval.
+ * @param {object} state
+ * @param {number} elapsedMs
+ */
+export function renderStats(state, elapsedMs) {
+    const elMin = elapsedMs / 60000;
+    const elHr  = elapsedMs / 3600000;
+    const safe  = (n, d) => d > 0.01 ? (n / d).toFixed(1) : '—';
+    const safeI = (n, d) => d > 0.01 ? Math.round(n / d).toString() : '—';
 
+    _setText('stat-procs-min',   safe (state.totalProcs,     elMin));
+    _setText('stat-procs-hr',    safeI(state.totalProcs,     elHr));
+    _setText('stat-mats-min',    safe (state.totalMaterials, elMin));
+    _setText('stat-mats-hr',     safeI(state.totalMaterials, elHr));
+    _setText('stat-uncommon-hr', safeI(state.totalUncommon,  elHr));
+    _setText('stat-rare-hr',     safeI(state.totalRare,      elHr));
+
+    const commonCount = Math.max(0, state.totalMaterials - state.totalUncommon - state.totalRare);
+    const total = state.totalMaterials || 1;
+
+    _setWidth('bar-common',   (commonCount           / total * 100).toFixed(1));
+    _setWidth('bar-uncommon', (state.totalUncommon   / total * 100).toFixed(1));
+    _setWidth('bar-rare',     (state.totalRare        / total * 100).toFixed(1));
+
+    _setText('count-common',   _fmt(commonCount));
+    _setText('count-uncommon', _fmt(state.totalUncommon));
+    _setText('count-rare',     _fmt(state.totalRare));
+}
+
+// ─── CSV Export ───────────────────────────────────────────────────────────────
+export function exportToCSV(state) {
+    const rows = [['Material', 'Count', 'Category']];
+    Object.entries(state.materials || {})
+        .sort((a, b) => b[1].count - a[1].count)
+        .forEach(([name, d]) => rows.push([name, d.count, d.category]));
+
+    const csv  = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `scavenging_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// ─── Full render ──────────────────────────────────────────────────────────────
 export function renderAll(state) {
     renderSummary(state);
     renderTable(state);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+function _fmt(n)    { return Number(n || 0).toLocaleString(); }
+function _cap(s)    { return s ? s[0].toUpperCase() + s.slice(1) : ''; }
+function _setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
+function _setWidth(id, pct) { const el = document.getElementById(id); if (el) el.style.width = `${pct}%`; }
 
-function _fmt(n) { return Number(n || 0).toLocaleString(); }
-function _cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : ''; }
+function _fmtDuration(ms) {
+    const s   = Math.max(0, Math.floor(ms / 1000));
+    const h   = Math.floor(s / 3600);
+    const m   = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return `${_pad(h)}:${_pad(m)}:${_pad(sec)}`;
+}
+function _pad(n) { return String(n).padStart(2, '0'); }

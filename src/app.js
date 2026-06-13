@@ -2,16 +2,19 @@
  * app.js — Scavenging Tracker Entry Point
  */
 
+// CSS is bundled by style-loader — import here so webpack includes it
+import '../style.css';
+
+// Import icon + appconfig so webpack copies them to dist/
+import '../icon.png';
+import '../appconfig.json';
+
 import { TrackerState, ChatboxWatcher } from './tracker.js';
-import { initUI, renderAll, updateStatus } from './ui.js';
+import { initUI, renderAll, renderStats, updateStatus, updateTimers, exportToCSV } from './ui.js';
 
 export const VERSION = '1.4.0';
 
 document.addEventListener('DOMContentLoaded', () => {
-
-    // Stamp version into toolbar immediately — confirms which build is loaded
-    const vEl = document.getElementById('app-version');
-    if (vEl) vEl.textContent = `v${VERSION}`;
 
     const tracker = new TrackerState();
     const watcher = new ChatboxWatcher(tracker);
@@ -20,17 +23,36 @@ document.addEventListener('DOMContentLoaded', () => {
     watcher.onStatusChange = (status, message) => updateStatus(status, message);
 
     initUI(
-        () => { tracker.reset(); renderAll(tracker.getState()); },
+        // onReset
+        () => {
+            tracker.reset();
+            const s = tracker.getState();
+            renderAll(s);
+            renderStats(s, 0);
+            updateTimers(0);
+        },
+        // onSortChange
         () => renderAll(tracker.getState()),
+        // onExportCSV
+        () => exportToCSV(tracker.getState()),
+        // version string
+        VERSION,
     );
 
     renderAll(tracker.getState());
-
-    // Start watcher — it polls internally for window.alt1 before proceeding,
-    // so timing is no longer a problem regardless of how fast the page loads.
     watcher.start();
 
-    // Dev helpers (tree-shaken out of production build)
+    // ── Active timer ───────────────────────────────────────────────────────────
+    // Ticks every second regardless of chat activity.
+    // Reads sessionStart from state so reset is automatic — no need to restart.
+    setInterval(() => {
+        const state   = tracker.getState();
+        const elapsed = Date.now() - new Date(state.sessionStart).getTime();
+        updateTimers(elapsed);
+        renderStats(state, elapsed);
+    }, 1000);
+
+    // Dev helpers
     if (process.env.NODE_ENV !== 'production') {
         window.ScavDev = {
             proc(name, qty = 1) {
@@ -38,19 +60,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 tracker.processLine(msg);
                 console.info(`[ScavDev] Simulated: ${msg}`);
             },
-            dump() {
-                console.table(
-                    Object.entries(tracker.getState().materials)
-                        .map(([n, d]) => ({ name: n, count: d.count, category: d.category }))
-                        .sort((a, b) => b.count - a.count)
-                );
-            },
+            dump()  { console.table(Object.entries(tracker.getState().materials).map(([n,d])=>({name:n,count:d.count,category:d.category})).sort((a,b)=>b.count-a.count)); },
             reset() { tracker.reset(); },
-
-            // Simulate the chatbox border flash without needing Alt1
-            flash() { console.info('[ScavDev] Flash would appear in Alt1.'); },
         };
-        console.info(`[ScavTracker] v${VERSION} — dev mode. Try ScavDev.proc("Base Parts", 3)`);
+        console.info(`[ScavTracker] v${VERSION} — dev mode. ScavDev.proc("Base Parts", 3)`);
     } else {
         console.info(`[ScavTracker] v${VERSION} loaded.`);
     }
