@@ -14,6 +14,24 @@ const SORT_FNS = {
         || b.count - a.count,
 };
 
+
+// ─── Theme ────────────────────────────────────────────────────────────────────
+const THEME_KEY = 'scav_tracker_theme';
+
+export function initTheme() {
+    const saved = localStorage.getItem(THEME_KEY) || 'dark';
+    _applyTheme(saved);
+}
+
+function _applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem(THEME_KEY, theme);
+    // Sync button states (initTheme may run before initUI)
+    document.querySelectorAll('.theme-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.theme === theme);
+    });
+}
+
 // ─── Element cache ────────────────────────────────────────────────────────────
 let $statusDot, $statusText;
 let $totalProcs, $totalMaterials, $totalUncommon, $totalRare;
@@ -89,6 +107,14 @@ export function initUI(onReset, onSortChange, onExportCSV, version) {
     // ── Export CSV ────────────────────────────────────────────────────────────
     const exportBtn = document.getElementById('export-csv-btn');
     if (exportBtn) exportBtn.addEventListener('click', onExportCSV);
+
+
+    // ── Theme toggle ──────────────────────────────────────────────────────────
+    document.querySelectorAll('.theme-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            _applyTheme(btn.dataset.theme);
+        });
+    });
 
     // ── About links — open in system browser ──────────────────────────────────
     document.querySelectorAll('.about-link').forEach(link => {

@@ -10,7 +10,7 @@ import '../icon.png';
 import '../appconfig.json';
 
 import { TrackerState, ChatboxWatcher } from './tracker.js';
-import { initUI, renderAll, renderStats, updateStatus, updateTimers, exportToCSV } from './ui.js';
+import { initUI, initTheme, renderAll, renderStats, updateStatus, updateTimers, exportToCSV } from './ui.js';
 
 export const VERSION = '1.4.0';
 
